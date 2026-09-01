@@ -64,10 +64,79 @@ def otsu_variance(histogram_normalized, thresholds):
 
     return total_variance
 
+def kapur_entropy(histogram_normalized, thresholds):
+    bounds = [0] + sorted([int(round(t)) for t in thresholds]) + [256]
+
+    total_entropy = 0.0
+
+    for j in range(len(bounds) - 1):
+
+        lower = bounds[j]
+        upper = bounds[j + 1]
+
+        class_probability = np.sum(histogram_normalized[lower:upper])
+
+        if class_probability == 0:
+            continue
+
+        for i in range(lower,upper):
+            p_i = histogram_normalized[i]
+            if p_i > 0:
+                p_normalized = p_i / class_probability
+                total_entropy -= p_normalized*np.log(p_normalized)
+
+    return total_entropy
+
+def tsallis_entropy(histogram_normalized, thresholds, q=0.8):
+
+    bounds = [0] + sorted([int(round(t)) for t in thresholds]) + [256]
+
+    class_entropies = []
+
+    for j in range(len(bounds) - 1):
+        lower = bounds[j]
+        upper = bounds[j+1]
+
+        cumulative_probabilty = np.sum(histogram_normalized[lower:upper])
+
+        if cumulative_probabilty == 0:
+            continue
+
+        class_entropy_fragment = 0
+        for i in range(lower, upper):
+            p_normalized = histogram_normalized[i]/cumulative_probabilty
+
+            class_entropy_fragment += p_normalized**q
+
+        class_entropy = (1/(q-1)) * (1 - class_entropy_fragment)
+        class_entropies.append(class_entropy)
+
+    if not class_entropies:
+        return 0.0
+
+    
+    product = 1.0
+
+    for s in class_entropies:
+        product *= (1.0 + (1.0 - q) * s)
+
+    total_entropy = (product - 1.0) / (1.0 - q)
+
+    return total_entropy
 
 
 
-def de(histogram, NP, num_thresholds, n_generations, F = 1, CR=0.5):
+
+
+
+
+
+
+
+
+
+
+def de(histogram, NP, num_thresholds, n_generations, F = 1, CR=0.5, objective=kapur_entropy):
     #NP = population size
     population =  gen_initial_population(NP, num_thresholds)
     rng = np.random.default_rng()
@@ -127,7 +196,7 @@ def de(histogram, NP, num_thresholds, n_generations, F = 1, CR=0.5):
             # print(f"{otsu_variance(image, population[i])=}")
             # print(f"{otsu_variance(image, u)=}")
             # print(f"{otsu_variance(image, population[i])=}")
-            if otsu_variance(histogram, u) > otsu_variance(histogram, population[i]):
+            if objective(histogram, u) > objective(histogram, population[i]):
                 # for po in range(50):
                 #     print(po*"&")
                 # print("better")
@@ -146,7 +215,7 @@ def sort_lists_in_parallel(list1, list2):
     return list(sorted1), list(sorted2)
 
         
-def jade(histogram, NP, num_thresholds, n_generations, c = 0.1, p=0.05):
+def jade(histogram, NP, num_thresholds, n_generations, c = 0.1, p=0.05, objective=kapur_entropy):
     #NP = population size
     population =  gen_initial_population(NP, num_thresholds)
     scores = [otsu_variance(histogram, threshold) for threshold in population]
@@ -249,8 +318,8 @@ def jade(histogram, NP, num_thresholds, n_generations, c = 0.1, p=0.05):
             #selection
             u.sort()
 
-            u_score = otsu_variance(histogram, u)
-            parent_score = otsu_variance(histogram, population[i])
+            u_score = objective(histogram, u)
+            parent_score = objective(histogram, population[i])
             if u_score > parent_score:
       
                 new_population.append(u)
@@ -272,6 +341,8 @@ def jade(histogram, NP, num_thresholds, n_generations, c = 0.1, p=0.05):
         if len(s_CR) > 0 and len(s_F) > 0:
             CR_mean = ((1 - c) * CR_mean) + (c * np.mean(s_CR))
             F_mean = ((1 - c) * F_mean) + (c * lehmer_mean(s_F))
+
+    return population[-1] #returns best set of thresholds 
         
             
         
@@ -290,7 +361,7 @@ def main():
     histogram_normalized = cv2.normalize(histogram, None, alpha = 1, beta = 0, norm_type=cv2.NORM_L1)
     
     # de(histogram_normalized, 1000, 12, 100, 1, 0.5)
-    jade(histogram=histogram_normalized, NP=50, num_thresholds=3, n_generations=100, c = 0.1, p = 0.05)
+    jade(histogram=histogram_normalized, NP=50, num_thresholds=3, n_generations=100, c = 0.1, p = 0.05, objective=tsallis_entropy)
     
 if __name__ == "__main__":
     main()
