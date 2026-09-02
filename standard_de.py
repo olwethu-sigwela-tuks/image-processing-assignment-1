@@ -4,14 +4,6 @@ Standard Differential Evolution: DE/rand/1/bin with greedy selection.
 Reference (see Background_Differential_Evolution.pdf, Eq. 1):
     x_i^{G+1} = u_i^G  if f(u_i^G) <= f(x_i^G)
               = x_i^G  otherwise
-
-This module is deliberately written so that NP (population size) and
-MAX_FES (function-evaluation budget) are passed in explicitly rather
-than hard-coded, since the assignment requires every DE variant (DE,
-JADE, SHADE, L-SHADE, LADE) to be compared under an EQUAL FEs budget.
-The same call signature / return contract is intended to be reused
-(and only the mutation+parameter-adaptation logic swapped out) when
-JADE/SHADE/L-SHADE/LADE are implemented next.
 """
 
 import numpy as np
@@ -37,10 +29,9 @@ class StandardDE:
         One of "otsu", "kapur", "tsallis" (see objective_functions.py).
     NP : int
         Population size.
-    MAX_FES : int
+    MAX_FES (Maximum Function Evaluations) : int
         Maximum number of objective-function evaluations. This is the
-        stopping criterion (per assignment protocol: "Set maximum
-        Function Evaluations (FEs) to be equal" across algorithms).
+        stopping criterion
     F : float
         Differential mutation scale factor.
     CR : float
@@ -78,8 +69,7 @@ class StandardDE:
 
         self.fes_used = 0
         # convergence history: best-so-far fitness recorded once per
-        # generation (natural/maximised units, i.e. sign-flipped back
-        # from the internal minimisation objective) for plotting later.
+        # generation (natural/maximised units, i.e. sign-flipped back from the internal minimisation objective) for plotting later.
         self.history = []
 
     # ----------------------------------------------------------------

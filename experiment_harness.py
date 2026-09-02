@@ -2,27 +2,25 @@
 Experiment harness for the COS791 multilevel thresholding assignment.
 
 Runs N independent repetitions of every (algorithm, image, objective, K)
-combination under an EQUAL function-evaluation budget (MAX_FES), exactly
-as required by the assignment's experimental protocol, and produces:
+combination under an EQUAL function-evaluation budget (MAX_FES) and produces:
 
   1. results/raw_results.csv
        One row per individual run: algorithm, image, objective, K, seed,
        best thresholds, fitness, PSNR, SSIM, Uniformity, wall-clock time,
-       FEs used. This is the file Wilcoxon/Friedman tests should be run
-       against later (they need per-run, not aggregated, data).
+       FEs used. This is the file Wilcoxon/Friedman tests are used to run
+       against.
 
   2. results/summary_table.csv
        Mean +/- std of PSNR/SSIM/Uniformity/time per (algorithm,
-       objective, K) -- the same shape as Table 1 in the assignment brief.
+       objective, K)
 
   3. results/convergence/*.npy
        Per-run best-fitness-per-generation traces, for convergence-curve
        plots later.
 
-The algorithm registry (ALGORITHMS dict below) is the single point where
-JADE / SHADE / L-SHADE / LADE get plugged in later: every algorithm class
+The algorithm registry is the single point where  JADE / SHADE / L-SHADE / LADE get plugged in later: every algorithm class
 is expected to expose the same constructor signature and a `.run()` ->
-(best_thresholds, best_fitness, history) contract that StandardDE already
+(best_thresholds, best_fitness, history) StandardDE already
 follows, so nothing else in this file needs to change when they're added.
 
 Usage:
@@ -54,8 +52,7 @@ from metrics import (
 )
 
 # --------------------------------------------------------------------------
-# Algorithm registry. Add JADE / SHADE / L-SHADE / LADE here as they're
-# built -- each must accept the same kwargs as StandardDE and implement
+# Algorithm registry. Add JADE / SHADE / L-SHADE / LADE here as built -- each must accept the same kwargs as StandardDE and implement
 # .run() -> (best_thresholds, best_fitness_natural, history).
 # --------------------------------------------------------------------------
 ALGORITHMS = {
@@ -86,8 +83,7 @@ def run_single(algo_name, image_path, hist_prob, gray_arr, K, objective,
         seed=seed,
         objective_kwargs=objective_kwargs,
     )
-    # F/CR only apply to Standard DE; adaptive variants (JADE/SHADE/...)
-    # won't accept them, so only pass if the algorithm supports it.
+    # F/CR only apply to Standard DE; adaptive variants won't accept them, so only pass if the algorithm supports it.
     if algo_name == "StandardDE":
         algo_kwargs.update(F=F, CR=CR)
 
@@ -123,7 +119,7 @@ def run_batch(image_paths, algorithms, objectives, K_values, n_runs=30,
     Full factorial sweep over (algorithm x image x objective x K), with
     `n_runs` independent repetitions of each combination (different seed
     per run, but the SAME seed sequence 0..n_runs-1 reused across every
-    combination so comparisons stay paired for Wilcoxon tests later).
+    combination so comparisons stay paired for Wilcoxon tests).
     """
     os.makedirs(outdir, exist_ok=True)
     conv_dir = os.path.join(outdir, "convergence")
@@ -132,7 +128,7 @@ def run_batch(image_paths, algorithms, objectives, K_values, n_runs=30,
 
     objective_kwargs_map = objective_kwargs_map or DEFAULT_OBJECTIVE_KWARGS
 
-    # Histograms are expensive-ish and constant across (algo, objective, K,
+    # Histograms are expensiveish and constant across (algo, objective, K,
     # seed) for a given image, so compute them once per image up front.
     image_cache = {}
     for path in image_paths:
@@ -215,8 +211,7 @@ def summarize(df, outdir="results", verbose=True):
 def summarize_by_image(df, outdir="results", verbose=True):
     """
     Same aggregation as summarize(), but keeping `image` as a group key --
-    useful for spotting any single image that behaves as an outlier before
-    you aggregate it away in the Table-1-style summary.
+    useful for spotting any single image that behaves as an outlier
     """
     summary = (
         df.groupby(["algorithm", "image", "objective", "K"])
