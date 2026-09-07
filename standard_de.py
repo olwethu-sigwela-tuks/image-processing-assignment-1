@@ -122,6 +122,8 @@ class StandardDE:
         generation = 0
         while self.fes_used < self.MAX_FES:
             generation += 1
+            new_pop, new_fitness = pop.copy(), fitness.copy()
+
             for i in range(self.NP):
                 if self.fes_used >= self.MAX_FES:
                     break
@@ -132,8 +134,8 @@ class StandardDE:
 
                 # Greedy selection (Eq. 1 in background doc)
                 if trial_fit <= fitness[i]:
-                    pop[i] = trial
-                    fitness[i] = trial_fit
+                    new_pop[i] = trial
+                    new_fitness[i] = trial_fit
                     if trial_fit < best_fit:
                         best_fit = trial_fit
                         best_vec = trial.copy()
@@ -144,6 +146,9 @@ class StandardDE:
                     f"[gen {generation}] FEs={self.fes_used}/{self.MAX_FES} "
                     f"best={-best_fit:.6f}"
                 )
+
+            pop = np.array(new_pop)
+            fitness = np.array(new_fitness)
 
         best_thresholds = np.sort(np.round(np.clip(best_vec, self.lb, self.ub)).astype(int))
         return best_thresholds, -best_fit, self.history
