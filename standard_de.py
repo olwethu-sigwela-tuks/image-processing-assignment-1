@@ -147,8 +147,8 @@ class StandardDE:
                     f"best={-best_fit:.6f}"
                 )
 
-            pop = np.array(new_pop)
-            fitness = np.array(new_fitness)
+            pop = new_pop
+            fitness = new_fitness
 
         best_thresholds = np.sort(np.round(np.clip(best_vec, self.lb, self.ub)).astype(int))
         return best_thresholds, -best_fit, self.history
