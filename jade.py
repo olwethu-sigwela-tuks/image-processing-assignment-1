@@ -1,13 +1,15 @@
 """
-Late Acceptance Differential Evolution
+JADE
 """
 
 import numpy as np
 
 from objective_functions import evaluate as obj_evaluate
 
+import random
 
-class LADE:
+
+class JADE:
     """
     DE/rand/1/bin optimiser for multilevel image thresholding.
 
@@ -51,7 +53,8 @@ class LADE:
         CR=0.9,
         seed=None,
         objective_kwargs=None,
-        L_a=10
+        c = 0.1,
+        p=0.05
     ):
         self.dim = dim
         self.lb, self.ub = bounds
@@ -63,7 +66,8 @@ class LADE:
         self.CR = CR
         self.objective_kwargs = objective_kwargs or {}
         self.rng = np.random.default_rng(seed)
-        self.L_a = L_a
+        self.c = c
+        self.p = p
 
         self.fes_used = 0
         # convergence history: best-so-far fitness recorded once per
@@ -77,21 +81,48 @@ class LADE:
             self.objective_name, vec, self.hist_prob, **self.objective_kwargs
         )
 
-    def _init_population(self):
-        pop = self.rng.uniform(self.lb, self.ub, size=(self.NP, self.dim))
-        fitness = np.array([self._evaluate(ind) for ind in pop])
-        return pop, fitness
+    def sort_lists_in_parallel(self, list1, list2):
+        sorted1, sorted2 = zip(*sorted(zip(list1, list2), key=lambda x: x[0]))
 
-    def _mutate(self, pop, target_idx):
+        return list(sorted1), list(sorted2)
+
+    def _init_population(self):
+        pop = list(self.rng.uniform(self.lb, self.ub, size=(self.NP, self.dim)))
+        fitness = [self._evaluate(ind) for ind in pop]
+
+        fitness, pop = self.sort_lists_in_parallel(fitness, pop)
+        return np.array(pop), np.array(fitness)
+
+    def _mutate(self, pop, target_idx, archive, F_i):
+        
         idxs = [i for i in range(self.NP) if i != target_idx]
-        r1, r2, r3 = self.rng.choice(idxs, size=3, replace=False)
-        mutant = pop[r1] + self.F * (pop[r2] - pop[r3])
+        
+        
+
+        p_num = max(1, int(round(self.p * self.NP)))
+        p_best = pop[:p_num]
+
+        threshold_i = pop[target_idx]
+        threshold_best = random.choice(p_best)
+
+        r1_idx = self.rng.choice(idxs)
+        threshold_r1 = pop[r1_idx]
+
+        union = [pop[i] for i in idxs if i != r1_idx] + archive
+        
+        threshold_r2 = random.choice(union)
+
+        mutant = threshold_i + (F_i * (threshold_best - threshold_i)) + (F_i * (threshold_r1 - threshold_r2))
         return np.clip(mutant, self.lb, self.ub)
 
-    def _crossover(self, target, mutant):
+    def lehmer_mean(self, lst):
+        return sum(i**2 for i in lst)/sum(i for i in lst)
+
+
+    def _crossover(self, target, mutant, CR_i):
         trial = target.copy()
         j_rand = self.rng.integers(self.dim)
-        cross_mask = self.rng.random(self.dim) <= self.CR
+        cross_mask = self.rng.random(self.dim) <= CR_i
         cross_mask[j_rand] = True  # guarantee at least one mutant gene
         trial[cross_mask] = mutant[cross_mask]
         return trial
@@ -111,32 +142,68 @@ class LADE:
             generation -- use for convergence-curve plots.
         """
         pop, fitness = self._init_population()
-        past_fitness = [fitness.copy() for i in range(self.L_a)]
 
         best_idx = np.argmin(fitness)  # internal fitness is minimised
         best_vec = pop[best_idx].copy()
         best_fit = fitness[best_idx]
         self.history.append(-best_fit)  # store in natural (maximise) units
 
+        s_CR = [] #set of all successful CR's
+        s_F = [] #set of all successful F's
+        archive = []
+        
+        
+        CR_mean = 0.5
+        F_mean = 0.5
+        
         generation = 0
         while self.fes_used < self.MAX_FES:
             generation += 1
             new_pop, new_fitness = pop.copy(), fitness.copy()
 
+            s_CR = []
+            s_F = []
+
             for i in range(self.NP):
                 if self.fes_used >= self.MAX_FES:
                     break
 
-                mutant = self._mutate(pop, i)
-                trial = self._crossover(pop[i], mutant)
+                CR_i = self.rng.normal(loc=CR_mean, scale=0.1)
+                if CR_i < 0:
+                    CR_i = 0
+    
+                if CR_i > 1:
+                    CR_i = 1
+    
+                F_i = F_mean + (0.1*self.rng.standard_cauchy())
+    
+                if F_i > 1:
+                    F_i = 1
+    
+                if F_i <= 0:
+                    while F_i <= 0:
+                        F_i = F_mean + (0.1*self.rng.standard_cauchy())
+    
+                
+                
+                mutant = self._mutate(pop, i, archive, F_i)
+                trial = self._crossover(pop[i], mutant, CR_i)
                 trial_fit = self._evaluate(trial)
 
-                # Late acceptance selection
-                if (trial_fit <= fitness[i]) or (trial_fit < past_fitness[0][i]):
+
+                # Greedy selection (Eq. 1 in background doc)
+                if trial_fit <= fitness[i]:
                     new_pop[i] = trial
                     new_fitness[i] = trial_fit
-                    l = len(past_fitness)
-                    if (trial_fit < best_fit):
+                    s_CR.append(CR_i)
+                    s_F.append(F_i)
+                    archive.append(pop[i])
+
+                    if len(archive) > self.NP:
+                        random_removal_idx = random.randint(0, len(archive) - 1)
+                        archive.pop(random_removal_idx)
+
+                    if trial_fit < best_fit:
                         best_fit = trial_fit
                         best_vec = trial.copy()
 
@@ -147,10 +214,12 @@ class LADE:
                     f"best={-best_fit:.6f}"
                 )
 
-            pop = new_pop       
-            fitness = new_fitness
-            past_fitness.pop(0) #remove oldest cost
-            past_fitness.append(fitness.copy())
+            new_fitness, new_pop = self.sort_lists_in_parallel(list(new_fitness), list(new_pop))
+            pop = np.array(new_pop)
+            fitness = np.array(new_fitness)
+            if len(s_CR) > 0 and len(s_F) > 0:
+                CR_mean = ((1 - self.c) * CR_mean) + (self.c * np.mean(s_CR))
+                F_mean = ((1 - self.c) * F_mean) + (self.c * self.lehmer_mean(s_F))
 
         best_thresholds = np.sort(np.round(np.clip(best_vec, self.lb, self.ub)).astype(int))
         return best_thresholds, -best_fit, self.history

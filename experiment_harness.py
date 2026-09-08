@@ -44,6 +44,7 @@ import pandas as pd
 
 from standard_de import StandardDE
 from lade import LADE
+from jade import JADE
 from metrics import (
     load_grayscale_histogram,
     segment_image,
@@ -58,7 +59,8 @@ from metrics import (
 # --------------------------------------------------------------------------
 ALGORITHMS = {
     "StandardDE": StandardDE,
-    "LADE": LADE
+    "LADE": LADE,
+    "JADE": JADE
 }
 
 # Default per-objective kwargs (e.g. Tsallis' q parameter).
