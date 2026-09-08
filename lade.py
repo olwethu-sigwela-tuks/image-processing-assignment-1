@@ -1,9 +1,5 @@
 """
-Standard Differential Evolution: DE/rand/1/bin with greedy selection.
-
-Reference (see Background_Differential_Evolution.pdf, Eq. 1):
-    x_i^{G+1} = u_i^G  if f(u_i^G) <= f(x_i^G)
-              = x_i^G  otherwise
+Late Acceptance Differential Evolution
 """
 
 import numpy as np
@@ -11,7 +7,7 @@ import numpy as np
 from objective_functions import evaluate as obj_evaluate
 
 
-class StandardDE:
+class LADE:
     """
     DE/rand/1/bin optimiser for multilevel image thresholding.
 
@@ -55,6 +51,7 @@ class StandardDE:
         CR=0.9,
         seed=None,
         objective_kwargs=None,
+        L_a=10
     ):
         self.dim = dim
         self.lb, self.ub = bounds
@@ -66,6 +63,7 @@ class StandardDE:
         self.CR = CR
         self.objective_kwargs = objective_kwargs or {}
         self.rng = np.random.default_rng(seed)
+        self.L_a = L_a
 
         self.fes_used = 0
         # convergence history: best-so-far fitness recorded once per
@@ -93,7 +91,7 @@ class StandardDE:
     def _crossover(self, target, mutant):
         trial = target.copy()
         j_rand = self.rng.integers(self.dim)
-        cross_mask = self.rng.random(self.dim) < self.CR
+        cross_mask = self.rng.random(self.dim) <= self.CR
         cross_mask[j_rand] = True  # guarantee at least one mutant gene
         trial[cross_mask] = mutant[cross_mask]
         return trial
@@ -113,6 +111,7 @@ class StandardDE:
             generation -- use for convergence-curve plots.
         """
         pop, fitness = self._init_population()
+        past_fitness = [fitness.copy() for i in range(self.L_a)]
 
         best_idx = np.argmin(fitness)  # internal fitness is minimised
         best_vec = pop[best_idx].copy()
@@ -132,11 +131,12 @@ class StandardDE:
                 trial = self._crossover(pop[i], mutant)
                 trial_fit = self._evaluate(trial)
 
-                # Greedy selection (Eq. 1 in background doc)
-                if trial_fit <= fitness[i]:
+                # Late acceptance selection
+                if (trial_fit <= fitness[i]) or (trial_fit < past_fitness[0][i]):
                     new_pop[i] = trial
                     new_fitness[i] = trial_fit
-                    if trial_fit < best_fit:
+                    l = len(past_fitness)
+                    if (trial_fit < best_fit):
                         best_fit = trial_fit
                         best_vec = trial.copy()
 
@@ -147,8 +147,10 @@ class StandardDE:
                     f"best={-best_fit:.6f}"
                 )
 
-            pop = new_pop
+            pop = new_pop       
             fitness = new_fitness
+            past_fitness.pop(0) #remove oldest cost
+            past_fitness.append(fitness.copy())
 
         best_thresholds = np.sort(np.round(np.clip(best_vec, self.lb, self.ub)).astype(int))
         return best_thresholds, -best_fit, self.history
