@@ -133,10 +133,24 @@ Typical values: 0.7–0.9.
 Higher CR = more diversity, lower CR = more stability.
 """
 
-def mutation(pop, F=0.5):
-  idxs = np.random.choice(len(pop), 3, replace=False)
-  r1, r2, r3 = pop[idxs]
-  return r1 + F * (r2 - r3)
+def mutation(current, pop, archive, F, p=0.2):
+    # Select p-best individual
+    p_best_size = max(2, int(p * len(pop)))
+    p_best = pop[np.random.randint(0, p_best_size)]
+
+    # Random individuals
+    r1 = pop[np.random.randint(len(pop))]
+    if len(archive) > 0:
+        r2 = archive[np.random.randint(len(archive))]
+    else:
+        r2 = pop[np.random.randint(len(pop))]
+
+    # Current-to-pbest mutation
+    mutant = current + F * (p_best - current) + F * (r1 - r2)
+
+    # Clip thresholds to valid range [1, 255]
+    mutant = np.clip(mutant, 1, 255)
+    return mutant
 
 def crossover(target, mutant, CR=0.9):
   mask = np.random.rand(len(target)) < CR
@@ -180,6 +194,7 @@ def update_memory(memory_F, memory_CR, mem_index, success_F, success_CR, success
 def lshade(hist, K, objective_fn, pop_size=30, max_gen=100):
   pop = initialize_population(pop_size, K)
   best = None
+  archive = []
 
   # --- Adaptive parameter memory initialization ---
   memory_size = 5
@@ -196,7 +211,8 @@ def lshade(hist, K, objective_fn, pop_size=30, max_gen=100):
 
     for target in pop:
       F, CR = sample_parameters(memory_F, memory_CR, mem_index)
-      mutant = mutation(pop, F=F)
+      p = np.random.uniform(2/len(pop), 0.2)
+      mutant = mutation(target, pop, archive, F, p=p)
       trial = crossover(target, mutant, CR=CR)
       selected = selection(target, trial, hist, objective_fn)
 
@@ -204,6 +220,11 @@ def lshade(hist, K, objective_fn, pop_size=30, max_gen=100):
                 success_F.append(F)
                 success_CR.append(CR)
                 success_deltas.append(abs(objective_fn(target, hist) - objective_fn(selected, hist)))
+
+                # Add replaced individual to archive
+                archive.append(target)
+                if len(archive) > len(pop):
+                   archive.pop(np.random.randint(len(archive)))
     
       new_pop.append(selected)
 
