@@ -1,73 +1,25 @@
 """
 Experiment harness for the COS791 multilevel thresholding assignment.
 
-This is the PLUG-IN SKELETON: every DE variant (Standard DE, JADE, SHADE,
-L-SHADE, LADE) is registered once in ALGORITHMS below, and everything else
--- the 30-independent-run sweep, equal-FEs comparability, CSV logging,
-resuming a crashed/partial run, and summary-table generation -- is
-generic and never needs to change when a new algorithm is added.
-
-All five algorithms are implemented as of this version:
-  - StandardDE, LADE, JADE were built directly against the shared
-    contract (de_base.py) and needed no changes to integrate.
-  - SHADE, L-SHADE were originally written as standalone notebook
-    scripts with their own objective functions, their own metrics, and
-    generation-count stopping instead of an FES budget -- they were
-    ported into this contract (mutation/archive/memory-adaptation logic
-    preserved from the original) so every algorithm's fitness values,
-    metrics, and evaluation budgets are computed identically and are
-    therefore actually comparable. See the top of shade.py / lshade.py
-    for the specifics of what changed and why.
-
-See de_base.py for the exact contract a class must satisfy to be
-registered here.
-
-WHAT THIS PRODUCES (all under --outdir):
+WHAT THIS PRODUCES (under each phase's own --outdir):
   1. raw_results.csv
        One row per individual run: algorithm, image, objective, K, seed,
        best thresholds, fitness, PSNR, SSIM, Uniformity, wall-clock time,
-       FEs used. This is the file Wilcoxon/Friedman tests should be run
-       against later (they need per-run, not aggregated, data). Written
-       INCREMENTALLY (one row appended per completed run), so a crash or
-       Ctrl-C partway through a long sweep does not lose completed work.
+       FEs used. This is the file Wilcoxon/Friedman tests should run
+       against later (they need per-run, not aggregated, data).
   2. summary_table.csv
        Mean +/- std of PSNR/SSIM/Uniformity/time per (algorithm,
-       objective, K) -- the same shape as Table 1 in the assignment brief.
+       objective, K)
   3. summary_by_image.csv
        Same aggregation but keeping `image` as a group key, to help spot
        an outlier image before it's averaged away.
   4. convergence/*.npy
        Per-run best-fitness-per-generation traces, for convergence plots.
 
-RESUMING: if raw_results.csv already exists in --outdir, the harness
-loads it and SKIPS any (algorithm, image, objective, K, seed) combination
-already present. This means you can: (a) re-run the same command after a
-crash and only the missing runs execute, and (b) add a newly-implemented
-algorithm to --algorithms and re-run without repeating everything you
-already have for the others.
-
-Usage examples:
-    # Quick sanity check of what a full sweep would run, without running it
-    python experiment_harness.py --phase phase1 --algorithms StandardDE LADE \\
-        --dry_run
-
-    # Full Phase 1 (BSD500) protocol run for Standard DE + LADE
-    python experiment_harness.py --phase phase1 \\
-        --algorithms StandardDE LADE \\
-        --objectives otsu kapur tsallis \\
-        --K_values 3 5 7 9 11 12 \\
-        --n_runs 30 --NP 50 --MAX_FES 10000
-
-    # Same, but for Phase 2 (CHAOS MRI)
-    python experiment_harness.py --phase phase2 --algorithms StandardDE LADE
-
-    # Regenerate summary tables only, from an existing raw_results.csv
-    python experiment_harness.py --outdir results/phase1_bsd500 --summarize_only
 """
 
-import argparse
+import functools
 import glob
-import inspect
 import os
 import time
 
@@ -77,8 +29,8 @@ import pandas as pd
 from standard_de import StandardDE
 from lade import LADE
 from jade import JADE
-from shade import SHADE
-from lshade import LSHADE
+import shade_imageprocessing as _shade_mod
+import l_shade_imageprocessing as _lshade_mod
 from metrics import (
     load_grayscale_histogram,
     segment_image,
@@ -87,30 +39,187 @@ from metrics import (
     compute_uniformity,
 )
 
-# --------------------------------------------------------------------------
-# ALGORITHM REGISTRY -- this is the one dict you touch to plug in a new
-# variant. Every entry must satisfy the contract in de_base.py.
-# --------------------------------------------------------------------------
-ALGORITHMS = {
-    "StandardDE": StandardDE,
-    "LADE": LADE,
-    "JADE": JADE,
-    "SHADE": SHADE,
-    "LSHADE": LSHADE,
-}
 
-# Convenience mapping for --phase, matching the actual folder names in the
-# assignment repo.
-PHASE_DIRS = {
-    "phase1": "BDS500",
-    "phase2": "CHAOS_DATA",
-}
+# ==========================================================================
+# CONFIG
+# ==========================================================================
+ALGORITHMS_TO_RUN = ["StandardDE", "LADE", "JADE", "SHADE", "LSHADE"]
+OBJECTIVES = ["otsu", "kapur", "tsallis"]
+K_VALUES = [3, 5, 7, 9, 11, 12]
+N_RUNS = 30
+NP = 50
+MAX_FES = 10000
+SEED_BASE = 0
+BOUNDS = (1, 254)
+SAVE_CONVERGENCE = True
 
-DEFAULT_OBJECTIVE_KWARGS = {
-    "otsu": {},
-    "kapur": {},
-    "tsallis": {"q": 0.8},
-}
+# Algorithm-specific hyperparameters
+F = 0.5                    # StandardDE / LADE mutation scale factor
+CR = 0.9                   # StandardDE / LADE crossover probability
+LATE_ACCEPTANCE_L = 20     # LADE fitness-history buffer length
+JADE_C = 0.1                # JADE adaptation rate
+JADE_P = 0.05                # JADE pbest fraction
+TSALLIS_Q = 0.8             # Tsallis entropy parameter
+
+# Dataset folders
+PHASE1_DIR = "BDS500"
+PHASE1_OUTDIR = "results/phase1_bsd500"
+PHASE2_DIR = "CHAOS_DATA"
+PHASE2_OUTDIR = "results/phase2_chaos"
+
+
+# --------------------------------------------------------------------------
+# Adapters for shade_imageprocessing.shade() and l_shade_imageprocessing
+# --------------------------------------------------------------------------
+class _FESBudgetExhausted(Exception):
+    """Internal signal used to interrupt shade()/lshade() once MAX_FES
+    evaluations have been spent."""
+
+
+class _CountingObjective:
+    """
+    Wraps one of shade_imageprocessing.py's / l_shade_imageprocessing.py's
+    own objective functions (otsu_objective / kapur_objective /
+    tsallis_objective)
+    """
+
+    def __init__(self, base_fn, max_fes):
+        self.base_fn = base_fn
+        self.max_fes = max_fes
+        self.fes_used = 0
+        self.best_val = np.inf
+        self.best_vec = None
+        self.history = []
+
+    def __call__(self, vec, hist):
+        if self.fes_used >= self.max_fes:
+            raise _FESBudgetExhausted()
+        self.fes_used += 1
+        val = self.base_fn(vec, hist)
+        if val < self.best_val:
+            self.best_val = val
+            self.best_vec = np.array(vec, dtype=float, copy=True)
+        self.history.append(-self.best_val)
+        return val
+
+
+_OBJ_NAME_MAP = {"otsu": "Otsu", "kapur": "Kapur", "tsallis": "Tsallis"}
+
+
+class SHADEAdapter:
+    """Wraps shade_imageprocessing.shade()"""
+
+    def __init__(self, dim, bounds, hist_prob, objective_name, NP, MAX_FES,
+                 seed=None, objective_kwargs=None):
+        self.dim = dim
+        self.hist_prob = hist_prob
+        self.objective_name = objective_name
+        self.NP = NP
+        self.MAX_FES = MAX_FES
+        self.seed = seed
+        self.objective_kwargs = objective_kwargs or {}
+        self.fes_used = 0
+        self.history = []
+
+    def run(self, verbose=False):
+        if self.seed is not None:
+            np.random.seed(self.seed)
+
+        base_fn = _shade_mod.objective_functions[_OBJ_NAME_MAP[self.objective_name]]
+        if self.objective_kwargs:
+            base_fn = functools.partial(base_fn, **self.objective_kwargs)
+        tracker = _CountingObjective(base_fn, self.MAX_FES)
+
+        max_gen = max(1, self.MAX_FES // max(1, self.NP))
+
+        try:
+            _shade_mod.shade(self.hist_prob, self.dim, tracker,
+                              pop_size=self.NP, max_gen=max_gen)
+        except _FESBudgetExhausted:
+            pass
+
+        self.fes_used = tracker.fes_used
+        self.history = tracker.history or [-tracker.best_val]
+
+        best_thresholds = np.sort(np.round(np.clip(tracker.best_vec, 1, 255)).astype(int))
+        return best_thresholds, -tracker.best_val, self.history
+
+
+class LSHADEAdapter:
+    """Wraps l_shade_imageprocessing.lshade()"""
+
+    def __init__(self, dim, bounds, hist_prob, objective_name, NP, MAX_FES,
+                 seed=None, objective_kwargs=None):
+        self.dim = dim
+        self.hist_prob = hist_prob
+        self.objective_name = objective_name
+        self.NP = NP
+        self.MAX_FES = MAX_FES
+        self.seed = seed
+        self.objective_kwargs = objective_kwargs or {}
+        self.fes_used = 0
+        self.history = []
+
+    def run(self, verbose=False):
+        if self.seed is not None:
+            np.random.seed(self.seed)
+
+        base_fn = _lshade_mod.objective_functions[_OBJ_NAME_MAP[self.objective_name]]
+        if self.objective_kwargs:
+            base_fn = functools.partial(base_fn, **self.objective_kwargs)
+        tracker = _CountingObjective(base_fn, self.MAX_FES)
+
+        N_min = 4
+        avg_pop = (self.NP + N_min) / 2.0
+        max_gen = max(1, int(self.MAX_FES / avg_pop))
+
+        try:
+            _lshade_mod.lshade(self.hist_prob, self.dim, tracker,
+                                pop_size=self.NP, max_gen=max_gen)
+        except _FESBudgetExhausted:
+            pass
+
+        self.fes_used = tracker.fes_used
+        self.history = tracker.history or [-tracker.best_val]
+
+        best_thresholds = np.sort(np.round(np.clip(tracker.best_vec, 1, 255)).astype(int))
+        return best_thresholds, -tracker.best_val, self.history
+
+
+# --------------------------------------------------------------------------
+# Per-algorithm construction
+# --------------------------------------------------------------------------
+def build_algorithm(algo_name, dim, hist_prob, objective_name, seed, objective_kwargs):
+    if algo_name == "StandardDE":
+        return StandardDE(
+            dim=dim, bounds=BOUNDS, hist_prob=hist_prob, objective_name=objective_name,
+            NP=NP, MAX_FES=MAX_FES, F=F, CR=CR, seed=seed, objective_kwargs=objective_kwargs,
+        )
+    elif algo_name == "LADE":
+        return LADE(
+            dim=dim, bounds=BOUNDS, hist_prob=hist_prob, objective_name=objective_name,
+            NP=NP, MAX_FES=MAX_FES, F=F, CR=CR, seed=seed, objective_kwargs=objective_kwargs,
+            L_a=LATE_ACCEPTANCE_L,
+        )
+    elif algo_name == "JADE":
+        return JADE(
+            dim=dim, bounds=BOUNDS, hist_prob=hist_prob, objective_name=objective_name,
+            NP=NP, MAX_FES=MAX_FES, seed=seed, objective_kwargs=objective_kwargs,
+            c=JADE_C, p=JADE_P,
+        )
+    elif algo_name == "SHADE":
+        return SHADEAdapter(
+            dim=dim, bounds=BOUNDS, hist_prob=hist_prob, objective_name=objective_name,
+            NP=NP, MAX_FES=MAX_FES, seed=seed, objective_kwargs=objective_kwargs,
+        )
+    elif algo_name == "LSHADE":
+        return LSHADEAdapter(
+            dim=dim, bounds=BOUNDS, hist_prob=hist_prob, objective_name=objective_name,
+            NP=NP, MAX_FES=MAX_FES, seed=seed, objective_kwargs=objective_kwargs,
+        )
+    else:
+        raise ValueError(f"Unknown algorithm: {algo_name}")
+
 
 RAW_RESULTS_COLUMNS = [
     "algorithm", "image", "objective", "K", "seed",
@@ -119,45 +228,10 @@ RAW_RESULTS_COLUMNS = [
 ]
 
 
-# --------------------------------------------------------------------------
-# Generic kwargs forwarding -- build_algo_kwargs() inspects the target
-# class's constructor and only forwards the extra kwargs it actually
-# declares, so a new algorithm's own hyperparameters never require edits
-# to run_single()/run_batch(). extra_kwargs itself is a dict keyed by
-# algorithm name (see main()'s ALGO_EXTRA_KWARGS below) rather than one
-# flat dict shared by everyone -- this matters because different
-# algorithms reuse the same parameter NAME for different things (e.g.
-# both JADE and SHADE/L-SHADE have a "p" = pbest-fraction parameter, but
-# with different CLI defaults), so keeping them namespaced by algorithm
-# avoids one silently overwriting the other.
-# --------------------------------------------------------------------------
-def build_algo_kwargs(AlgoClass, base_kwargs, extra_kwargs):
-    sig = inspect.signature(AlgoClass.__init__)
-    accepted = set(sig.parameters.keys())
-    kwargs = dict(base_kwargs)
-    for k, v in extra_kwargs.items():
-        if k in accepted:
-            kwargs[k] = v
-    return kwargs
-
-
-def run_single(algo_name, image_path, hist_prob, gray_arr, K, objective,
-                NP, MAX_FES, seed, objective_kwargs, bounds, extra_kwargs):
+def run_single(algo_name, image_path, hist_prob, gray_arr, K, objective, seed):
     """Execute one independent run and return a flat result dict + history."""
-    AlgoClass = ALGORITHMS[algo_name]
-
-    base_kwargs = dict(
-        dim=K,
-        bounds=bounds,
-        hist_prob=hist_prob,
-        objective_name=objective,
-        NP=NP,
-        MAX_FES=MAX_FES,
-        seed=seed,
-        objective_kwargs=objective_kwargs,
-    )
-    algo_kwargs = build_algo_kwargs(AlgoClass, base_kwargs, extra_kwargs.get(algo_name, {}))
-    algo = AlgoClass(**algo_kwargs)
+    objective_kwargs = {"q": TSALLIS_Q} if objective == "tsallis" else {}
+    algo = build_algorithm(algo_name, K, hist_prob, objective, seed, objective_kwargs)
 
     t0 = time.perf_counter()
     best_thresholds, best_fitness, history = algo.run()
@@ -185,77 +259,71 @@ def load_completed_runs(raw_path):
     """
     Read an existing raw_results.csv (if any) and return the set of
     (algorithm, image, objective, K, seed) tuples already completed, so
-    run_batch() can skip them. Returns an empty set if the file doesn't
+    run_phase() can skip them. Returns an empty set if the file doesn't
     exist yet.
     """
     if not os.path.exists(raw_path):
         return set()
     existing = pd.read_csv(raw_path)
-    keys = set(
-        zip(
-            existing["algorithm"], existing["image"], existing["objective"],
-            existing["K"], existing["seed"],
-        )
-    )
-    return keys
+    return set(zip(
+        existing["algorithm"], existing["image"], existing["objective"],
+        existing["K"], existing["seed"],
+    ))
 
 
-def run_batch(image_paths, algorithms, objectives, K_values, n_runs=30,
-              NP=50, MAX_FES=10000, seed_base=0, outdir="results",
-              objective_kwargs_map=None, save_convergence=True,
-              bounds=(1, 254), extra_kwargs=None, verbose=True):
+def discover_images(image_dir, extensions=(".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
+    paths = []
+    for ext in extensions:
+        paths.extend(glob.glob(os.path.join(image_dir, f"*{ext}")))
+        paths.extend(glob.glob(os.path.join(image_dir, f"*{ext.upper()}")))
+    # exclude ground-truth mask files (naming convention: *_gt.*)
+    paths = [p for p in paths if "_gt" not in os.path.basename(p).lower()]
+    return sorted(set(paths))
+
+
+def run_phase(image_dir, outdir):
     """
-    Full factorial sweep over (algorithm x image x objective x K), with
-    `n_runs` independent repetitions of each combination. Resumable: any
-    combination already present in outdir/raw_results.csv is skipped.
-    Results are appended to the CSV as each run completes (crash-safe).
-
-    extra_kwargs : dict[str, dict] or None
-        Per-algorithm hyperparameters, e.g.
-        {"StandardDE": {"F": 0.5, "CR": 0.9}, "LADE": {"F": 0.5, "CR": 0.9, "L": 20}, ...}
-        Only the keys present in a given algorithm's own dict (and only
-        the ones that class's __init__ actually declares) are forwarded
-        to it -- see build_algo_kwargs().
+    Full factorial sweep over (algorithm x image x objective x K)
     """
+    image_paths = discover_images(image_dir)
+    if not image_paths:
+        print(f"No images found in {image_dir}, skipping this phase.")
+        return None
+
+    print(f"Found {len(image_paths)} image(s) in {image_dir}: "
+          f"{[os.path.basename(p) for p in image_paths]}")
+
     os.makedirs(outdir, exist_ok=True)
     conv_dir = os.path.join(outdir, "convergence")
-    if save_convergence:
+    if SAVE_CONVERGENCE:
         os.makedirs(conv_dir, exist_ok=True)
-
-    objective_kwargs_map = objective_kwargs_map or DEFAULT_OBJECTIVE_KWARGS
-    extra_kwargs = extra_kwargs or {}
 
     raw_path = os.path.join(outdir, "raw_results.csv")
     completed = load_completed_runs(raw_path)
-    if completed and verbose:
+    if completed:
         print(f"Resuming: found {len(completed)} previously-completed runs "
               f"in {raw_path}, these will be skipped.")
 
-    # Histograms are constant across (algo, objective, K, seed) for a given
-    # image, so compute them once per image up front.
-    image_cache = {}
-    for path in image_paths:
-        gray_arr, hist_prob = load_grayscale_histogram(path)
-        image_cache[path] = (gray_arr, hist_prob)
+    # Histograms are constant across (algo, objective, K, seed) for a given image, so compute them once per image up front.
+    image_cache = {p: load_grayscale_histogram(p) for p in image_paths}
 
     planned = []
-    for algo_name in algorithms:
+    for algo_name in ALGORITHMS_TO_RUN:
         for image_path in image_paths:
             image_name = os.path.basename(image_path)
-            for objective in objectives:
-                for K in K_values:
-                    for run_idx in range(n_runs):
-                        seed = seed_base + run_idx
+            for objective in OBJECTIVES:
+                for K in K_VALUES:
+                    for run_idx in range(N_RUNS):
+                        seed = SEED_BASE + run_idx
                         key = (algo_name, image_name, objective, K, seed)
                         if key not in completed:
                             planned.append((algo_name, image_path, objective, K, seed))
 
     total_runs = len(planned)
-    if verbose:
-        skipped = (len(algorithms) * len(image_paths) * len(objectives)
-                   * len(K_values) * n_runs) - total_runs
-        print(f"Planned: {total_runs} runs to execute "
-              f"({skipped} already completed and skipped).")
+    total_possible = (len(ALGORITHMS_TO_RUN) * len(image_paths) * len(OBJECTIVES)
+                       * len(K_VALUES) * N_RUNS)
+    print(f"Planned: {total_runs} runs to execute "
+          f"({total_possible - total_runs} already completed and skipped).")
 
     file_exists = os.path.exists(raw_path)
     skipped_algorithms = set()
@@ -267,13 +335,9 @@ def run_batch(image_paths, algorithms, objectives, K_values, n_runs=30,
             continue
 
         gray_arr, hist_prob = image_cache[image_path]
-        obj_kwargs = objective_kwargs_map.get(objective, {})
 
         try:
-            record, history = run_single(
-                algo_name, image_path, hist_prob, gray_arr, K, objective,
-                NP, MAX_FES, seed, obj_kwargs, bounds, extra_kwargs,
-            )
+            record, history = run_single(algo_name, image_path, hist_prob, gray_arr, K, objective, seed)
         except NotImplementedError as e:
             print(f"\n[SKIPPING '{algo_name}'] not yet implemented: {e}\n"
                   f"All remaining planned runs for '{algo_name}' will be skipped.\n")
@@ -290,40 +354,36 @@ def run_batch(image_paths, algorithms, objectives, K_values, n_runs=30,
         row_df.to_csv(raw_path, mode="a", header=not file_exists, index=False)
         file_exists = True
 
-        if save_convergence:
+        if SAVE_CONVERGENCE:
             tag = f"{algo_name}_{record['image']}_{objective}_K{K}_run{seed}"
             np.save(os.path.join(conv_dir, f"{tag}.npy"), np.array(history, dtype=float))
 
         done += 1
-        if verbose:
-            elapsed_total = time.time() - t_start
-            eta = (elapsed_total / done) * (total_runs - done) if done else 0
-            print(
-                f"[{done}/{total_runs}] {algo_name} | {record['image']} | "
-                f"{objective} | K={K} | seed={seed} -> "
-                f"PSNR={record['psnr']:.2f} SSIM={record['ssim']:.3f} "
-                f"U={record['uniformity']:.3f} t={record['time_sec']:.2f}s | "
-                f"ETA={eta/60:.1f} min"
-            )
+        elapsed_total = time.time() - t_start
+        eta = (elapsed_total / done) * (total_runs - done) if done else 0
+        print(
+            f"[{done}/{total_runs}] {algo_name} | {record['image']} | "
+            f"{objective} | K={K} | seed={seed} -> "
+            f"PSNR={record['psnr']:.2f} SSIM={record['ssim']:.3f} "
+            f"U={record['uniformity']:.3f} t={record['time_sec']:.2f}s | "
+            f"ETA={eta/60:.1f} min"
+        )
 
     if not os.path.exists(raw_path):
-        print("No runs were completed (nothing planned, or every algorithm "
-              "requested is unimplemented). Nothing to summarise.")
-        return None, None, None
+        print("No runs were completed. Nothing to summarise.")
+        return None
 
     df = pd.read_csv(raw_path)
-    if verbose:
-        print(f"\n{raw_path} now has {len(df)} total run records.")
-        if skipped_algorithms:
-            print(f"Algorithms skipped this run (not yet implemented): "
-                  f"{sorted(skipped_algorithms)}")
+    print(f"\n{raw_path} now has {len(df)} total run records.")
+    if skipped_algorithms:
+        print(f"Algorithms skipped this run (not yet implemented): {sorted(skipped_algorithms)}")
 
-    summary = summarize(df, outdir=outdir, verbose=verbose)
-    summary_by_image = summarize_by_image(df, outdir=outdir, verbose=verbose)
-    return df, summary, summary_by_image
+    summarize(df, outdir)
+    summarize_by_image(df, outdir)
+    return df
 
 
-def summarize(df, outdir="results", verbose=True):
+def summarize(df, outdir):
     """Aggregate raw per-run results into mean +/- std per (algo, objective, K)."""
     summary = (
         df.groupby(["algorithm", "objective", "K"])
@@ -337,18 +397,15 @@ def summarize(df, outdir="results", verbose=True):
         .reset_index()
         .sort_values(["algorithm", "objective", "K"])
     )
-    summary_path = os.path.join(outdir, "summary_table.csv")
-    summary.to_csv(summary_path, index=False)
-    if verbose:
-        print(f"Saved summary table to {summary_path}")
+    path = os.path.join(outdir, "summary_table.csv")
+    summary.to_csv(path, index=False)
+    print(f"Saved summary table to {path}")
     return summary
 
 
-def summarize_by_image(df, outdir="results", verbose=True):
+def summarize_by_image(df, outdir):
     """
-    Same aggregation as summarize(), but keeping `image` as a group key --
-    useful for spotting any single image that behaves as an outlier before
-    you aggregate it away in the Table-1-style summary.
+    Same aggregation as summarize(), but keeping `image` as a group key
     """
     summary = (
         df.groupby(["algorithm", "image", "objective", "K"])
@@ -364,123 +421,16 @@ def summarize_by_image(df, outdir="results", verbose=True):
     )
     path = os.path.join(outdir, "summary_by_image.csv")
     summary.to_csv(path, index=False)
-    if verbose:
-        print(f"Saved per-image summary table to {path}")
+    print(f"Saved per-image summary table to {path}")
     return summary
 
 
-def discover_images(image_dir, extensions=(".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
-    paths = []
-    for ext in extensions:
-        paths.extend(glob.glob(os.path.join(image_dir, f"*{ext}")))
-        paths.extend(glob.glob(os.path.join(image_dir, f"*{ext.upper()}")))
-    # exclude ground-truth mask files (naming convention: *_gt.*)
-    paths = [p for p in paths if "_gt" not in os.path.basename(p).lower()]
-    return sorted(set(paths))
-
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--image_dir", default=None,
-                         help="Folder of images (GT masks named *_gt.* are auto-excluded). "
-                              "Overrides --phase if both are given.")
-    parser.add_argument("--phase", choices=list(PHASE_DIRS.keys()), default=None,
-                         help=f"Shortcut for the assignment's dataset folders: "
-                              f"{PHASE_DIRS}. Ignored if --image_dir is given.")
-    parser.add_argument("--algorithms", nargs="+", default=["StandardDE"],
-                         choices=list(ALGORITHMS.keys()))
-    parser.add_argument("--objectives", nargs="+", default=["otsu", "kapur", "tsallis"],
-                         choices=["otsu", "kapur", "tsallis"])
-    parser.add_argument("--K_values", nargs="+", type=int, default=[3, 5, 7, 9, 11, 12])
-    parser.add_argument("--n_runs", type=int, default=30)
-    parser.add_argument("--NP", type=int, default=50)
-    parser.add_argument("--MAX_FES", type=int, default=10000)
-    parser.add_argument("--seed_base", type=int, default=0)
-    parser.add_argument("--outdir", default="results")
-    parser.add_argument("--no_convergence", action="store_true",
-                         help="Skip saving per-run convergence traces (saves disk/time).")
-    parser.add_argument("--dry_run", action="store_true",
-                         help="Print the planned run count and exit without executing anything.")
-    parser.add_argument("--summarize_only", action="store_true",
-                         help="Skip running anything; just regenerate summary tables from "
-                              "an existing outdir/raw_results.csv.")
+    print("=== Phase 1: BSD500 (proof-of-concept) ===")
+    run_phase(PHASE1_DIR, PHASE1_OUTDIR)
 
-    # Standard DE / LADE hyperparameters (silently ignored by algorithms
-    # that don't declare a matching constructor parameter).
-    parser.add_argument("--F", type=float, default=0.5, help="Standard DE / LADE mutation scale factor")
-    parser.add_argument("--CR", type=float, default=0.9, help="Standard DE / LADE crossover probability")
-    parser.add_argument("--q", type=float, default=0.8, help="Tsallis entropy parameter")
-    parser.add_argument("--late_acceptance_L", type=int, default=20,
-                         help="LADE fitness-history buffer length (maps to LateAcceptanceDE's L kwarg)")
-    parser.add_argument("--jade_c", type=float, default=0.1, help="JADE adaptation rate c")
-    parser.add_argument("--jade_p", type=float, default=0.05, help="JADE pbest fraction p")
-    parser.add_argument("--shade_H", type=int, default=10, help="SHADE / L-SHADE memory size H")
-    parser.add_argument("--shade_p", type=float, default=0.1, help="SHADE / L-SHADE pbest fraction p")
-    parser.add_argument("--lshade_Nmin", type=int, default=4, help="L-SHADE minimum population size")
-
-    args = parser.parse_args()
-
-    if args.summarize_only:
-        raw_path = os.path.join(args.outdir, "raw_results.csv")
-        if not os.path.exists(raw_path):
-            raise SystemExit(f"--summarize_only given but {raw_path} does not exist.")
-        df = pd.read_csv(raw_path)
-        summarize(df, outdir=args.outdir)
-        summarize_by_image(df, outdir=args.outdir)
-        return
-
-    if args.image_dir:
-        image_dir = args.image_dir
-    elif args.phase:
-        image_dir = PHASE_DIRS[args.phase]
-    else:
-        raise SystemExit("Provide either --image_dir or --phase.")
-
-    image_paths = discover_images(image_dir)
-    if not image_paths:
-        raise SystemExit(f"No images found in {image_dir}")
-
-    objective_kwargs_map = dict(DEFAULT_OBJECTIVE_KWARGS)
-    objective_kwargs_map["tsallis"] = {"q": args.q}
-
-    extra_kwargs = dict(
-        StandardDE=dict(F=args.F, CR=args.CR),
-        LADE=dict(F=args.F, CR=args.CR, L_a=args.late_acceptance_L),
-        JADE=dict(c=args.jade_c, p=args.jade_p),
-        SHADE=dict(H=args.shade_H, p_max=args.shade_p),
-        LSHADE=dict(H=args.shade_H, p_max=args.shade_p, N_min=args.lshade_Nmin),
-    )
-
-    if args.dry_run:
-        n_combos = (len(args.algorithms) * len(image_paths) * len(args.objectives)
-                    * len(args.K_values) * args.n_runs)
-        print(f"Images found ({len(image_paths)}): "
-              f"{[os.path.basename(p) for p in image_paths]}")
-        print(f"Algorithms: {args.algorithms}")
-        print(f"Objectives: {args.objectives}")
-        print(f"K values:   {args.K_values}")
-        print(f"n_runs:     {args.n_runs}")
-        print(f"\nTotal planned runs: {n_combos}")
-        print("(Dry run -- nothing executed. Remove --dry_run to run it for real.)")
-        return
-
-    print(f"Found {len(image_paths)} image(s) in {image_dir}: "
-          f"{[os.path.basename(p) for p in image_paths]}")
-
-    run_batch(
-        image_paths=image_paths,
-        algorithms=args.algorithms,
-        objectives=args.objectives,
-        K_values=args.K_values,
-        n_runs=args.n_runs,
-        NP=args.NP,
-        MAX_FES=args.MAX_FES,
-        seed_base=args.seed_base,
-        outdir=args.outdir,
-        objective_kwargs_map=objective_kwargs_map,
-        save_convergence=not args.no_convergence,
-        extra_kwargs=extra_kwargs,
-    )
+    print("\n=== Phase 2: CHAOS MRI (domain application) ===")
+    run_phase(PHASE2_DIR, PHASE2_OUTDIR)
 
 
 if __name__ == "__main__":

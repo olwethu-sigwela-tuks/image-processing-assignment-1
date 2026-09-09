@@ -14,18 +14,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os as os
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+from objective_functions import evaluate as _obj_evaluate
 
 """**Population Generation**"""
 
-def initialize_population(pop_size, K, L=256):
-  population = []
-  for _ in range(pop_size):
-    candidate = np.sort(np.random.randint(1, L-1, size=K))
-    population.append(candidate)
-  return np.array(population)
 
-#pop = initialize_population(10, 3)
-#print(pop)
+def initialize_population(pop_size, K, L=256):
+    population = []
+    for _ in range(pop_size):
+        candidate = np.sort(np.random.randint(1, L - 1, size=K))
+        population.append(candidate)
+    return np.array(population)
+
+
+# pop = initialize_population(10, 3)
+# print(pop)
 
 """**Objective Functions**
 
@@ -38,17 +41,20 @@ Otsu’s Variance
 𝜇𝑇: overall mean intensity.
 Goal: maximize between-class variance → classes are well separated.
 """
-
 def otsu_objective(thresholds, hist):
-  thresholds = np.sort(thresholds)
-  thresholds = np.sort(thresholds.astype(int))
-  bins = np.arange(len(hist))
-  classes = np.split(hist, thresholds)
-  means = [np.mean(c) for c in classes]
-  weights = [c.sum() for c in classes]
-  overall_mean = np.sum(bins * hist)
-  variance = sum([w * (m - overall_mean)**2 for w, m in zip(weights, means)])
-  return -variance
+    return _obj_evaluate("otsu", thresholds, hist)
+
+# def otsu_objective(thresholds, hist):
+#     thresholds = np.sort(thresholds)
+#     thresholds = np.sort(thresholds.astype(int))
+#     bins = np.arange(len(hist))
+#     classes = np.split(hist, thresholds)
+#     means = [np.mean(c) for c in classes]
+#     weights = [c.sum() for c in classes]
+#     overall_mean = np.sum(bins * hist)
+#     variance = sum([w * (m - overall_mean) ** 2 for w, m in zip(weights, means)])
+#     return -variance
+
 
 """Entropy (Kapur): Measures uncertainty/information. High entropy = segmentation captures more detail.
 
@@ -60,11 +66,15 @@ Goal: maximize entropy → classes contain maximum information
 """
 
 def kapur_objective(thresholds, hist):
-  thresholds = np.sort(thresholds)
-  thresholds = np.sort(thresholds.astype(int))
-  classes = np.split(hist, thresholds)
-  entropy = sum([-np.sum(c * np.log(c + 1e-12)) for c in classes])
-  return -entropy
+    return _obj_evaluate("kapur", thresholds, hist)
+
+
+# def kapur_objective(thresholds, hist):
+#   thresholds = np.sort(thresholds)
+#   thresholds = np.sort(thresholds.astype(int))
+#   classes = np.split(hist, thresholds)
+#   entropy = sum([-np.sum(c * np.log(c + 1e-12)) for c in classes])
+#   return -entropy
 
 """Tsallis Entropy: Generalized entropy that handles non-linear, long-range correlations (useful in medical images)
 
@@ -75,11 +85,13 @@ Goal: maximize non-extensive entropy → captures complex distributions better t
 """
 
 def tsallis_objective(thresholds, hist, q=0.8):
-  thresholds = np.sort(thresholds)
-  thresholds = np.sort(thresholds.astype(int))
-  classes = np.split(hist, thresholds)
-  tsallis = sum([(1 - np.sum(c**q)) / (q-1) for c in classes])
-  return -tsallis
+    return _obj_evaluate("tsallis", thresholds, hist, q=q)
+# def tsallis_objective(thresholds, hist, q=0.8):
+#   thresholds = np.sort(thresholds)
+#   thresholds = np.sort(thresholds.astype(int))
+#   classes = np.split(hist, thresholds)
+#   tsallis = sum([(1 - np.sum(c**q)) / (q-1) for c in classes])
+#   return -tsallis
 
 objective_functions = {
     "Otsu": otsu_objective,
@@ -133,10 +145,12 @@ Typical values: 0.7–0.9.
 Higher CR = more diversity, lower CR = more stability.
 """
 
-def mutation(current, pop, archive, F, p=0.2):
-    # Select p-best individual
+
+def mutation(current, pop, fitness, archive, F, p=0.2):
+    # Select p-best individual by FITNESS RANK, not array position
     p_best_size = max(2, int(p * len(pop)))
-    p_best = pop[np.random.randint(0, p_best_size)]
+    best_idx = np.argsort(fitness)[:p_best_size]
+    p_best = pop[best_idx[np.random.randint(0, len(best_idx))]]
 
     # Random individuals
     r1 = pop[np.random.randint(len(pop))]
@@ -152,18 +166,23 @@ def mutation(current, pop, archive, F, p=0.2):
     mutant = np.clip(mutant, 1, 255)
     return mutant
 
+
 def crossover(target, mutant, CR=0.9):
-  mask = np.random.rand(len(target)) < CR
-  trial = np.where(mask, mutant, target)
-  return np.sort(trial)
+    mask = np.random.rand(len(target)) < CR
+    j_rand = np.random.randint(len(target))
+    mask[j_rand] = True
+    trial = np.where(mask, mutant, target)
+    return np.sort(trial)
+
 
 """**Selection**"""
 
+
 def selection(target, trial, hist, objective_fn):
-  if objective_fn(trial, hist) < objective_fn(target, hist):
-    return trial
-  else:
-    return target
+    if objective_fn(trial, hist) <= objective_fn(target, hist):
+        return trial
+    else:
+        return target
 
 
 def sample_parameters(memory_F, memory_CR, mem_index):
@@ -181,7 +200,7 @@ def sample_parameters(memory_F, memory_CR, mem_index):
 def update_memory(memory_F, memory_CR, mem_index, success_F, success_CR, success_deltas):
     if success_F:
         weights = np.array(success_deltas) / np.sum(success_deltas)
-        mean_F = np.sum(weights * np.array(success_F)**2) / np.sum(weights * np.array(success_F))
+        mean_F = np.sum(weights * np.array(success_F) ** 2) / np.sum(weights * np.array(success_F))
         mean_CR = np.sum(weights * np.array(success_CR))
         memory_F[mem_index] = mean_F
         memory_CR[mem_index] = mean_CR
@@ -191,54 +210,67 @@ def update_memory(memory_F, memory_CR, mem_index, success_F, success_CR, success
 
 """**L‑SHADE Implementation**"""
 
+
 def lshade(hist, K, objective_fn, pop_size=30, max_gen=100):
-  pop = initialize_population(pop_size, K)
-  best = None
-  archive = []
+    pop = initialize_population(pop_size, K)
+    fitness = np.array([objective_fn(ind, hist) for ind in pop])
+    best = None
+    archive = []
 
-  # --- Adaptive parameter memory initialization ---
-  memory_size = 5
-  memory_F = [0.5] * memory_size
-  memory_CR = [0.9] * memory_size
-  mem_index = 0
+    # --- Adaptive parameter memory initialization ---
+    memory_size = 5
+    memory_F = [0.5] * memory_size
+    memory_CR = [0.9] * memory_size
+    mem_index = 0
 
-  for gen in range(max_gen):
-    current_pop_size = max(4, int(pop_size - (gen/max_gen)*(pop_size-4)))
-    pop = pop[:current_pop_size]
+    for gen in range(max_gen):
+        current_pop_size = max(4, int(pop_size - (gen / max_gen) * (pop_size - 4)))
+        if current_pop_size < len(pop):
+            # Keep the BEST individuals (by fitness), not just the first N
+            keep_idx = np.argsort(fitness)[:current_pop_size]
+            pop = pop[keep_idx]
+            fitness = fitness[keep_idx]
 
-    success_F, success_CR, success_deltas = [], [], []
-    new_pop = []
+        success_F, success_CR, success_deltas = [], [], []
+        new_pop = []
+        new_fitness = []
 
-    for target in pop:
-      F, CR = sample_parameters(memory_F, memory_CR, mem_index)
-      p = np.random.uniform(2/len(pop), 0.2)
-      mutant = mutation(target, pop, archive, F, p=p)
-      trial = crossover(target, mutant, CR=CR)
-      selected = selection(target, trial, hist, objective_fn)
+        for i, target in enumerate(pop):
+            F, CR = sample_parameters(memory_F, memory_CR, mem_index)
+            p = np.random.uniform(2 / len(pop), 0.2)
+            mutant = mutation(target, pop, fitness, archive, F, p=p)
+            trial = crossover(target, mutant, CR=CR)
+            trial_fit = objective_fn(trial, hist)
+            target_fit = fitness[i]
 
-      if not np.array_equal(selected, target):
+            if trial_fit <= target_fit:
+                selected, selected_fit = trial, trial_fit
                 success_F.append(F)
                 success_CR.append(CR)
-                success_deltas.append(abs(objective_fn(target, hist) - objective_fn(selected, hist)))
+                success_deltas.append(abs(target_fit - trial_fit) + 1e-12)
 
                 # Add replaced individual to archive
                 archive.append(target)
                 if len(archive) > len(pop):
-                   archive.pop(np.random.randint(len(archive)))
-    
-      new_pop.append(selected)
+                    archive.pop(np.random.randint(len(archive)))
+            else:
+                selected, selected_fit = target, target_fit
 
-    pop = np.array(new_pop)
-    scores = [objective_fn(ind, hist) for ind in pop]
-    best_idx = np.argmin(scores)
-    best = pop[best_idx]
-    best_score = scores[best_idx]
+            new_pop.append(selected)
+            new_fitness.append(selected_fit)
 
-    # --- Update memory pools after each generation ---
-    memory_F, memory_CR, mem_index = update_memory(memory_F, memory_CR, mem_index,
+        pop = np.array(new_pop)
+        fitness = np.array(new_fitness)
+        best_idx = np.argmin(fitness)
+        best = pop[best_idx]
+        best_score = fitness[best_idx]
+
+        # --- Update memory pools after each generation ---
+        memory_F, memory_CR, mem_index = update_memory(memory_F, memory_CR, mem_index,
                                                        success_F, success_CR, success_deltas)
 
-  return best, best_score, -best_score
+    return best, best_score, -best_score
+
 
 """**Performance Evaluation Metrics**
 
@@ -269,24 +301,27 @@ where 𝐾 is the number of regions, 𝜎𝑖 is the standard deviation of pixel
 Interpretation: Lower 𝑈 → more uniform regions (better segmentation).
 """
 
+
 def compute_metrics(original, segmented, thresholds):
-  psnr = peak_signal_noise_ratio(original, segmented)
+    psnr = peak_signal_noise_ratio(original, segmented)
 
-  ssim = structural_similarity(original, segmented)
+    ssim = structural_similarity(original, segmented)
 
-  regions = np.digitize(original, thresholds)
-  U = 0
-  for k in range(len(thresholds)+1):
-    region_pixels = original[regions == k]
-    if len(region_pixels) > 0 and np.mean(region_pixels) != 0:
-      mu = np.mean(region_pixels)
-      sigma = np.std(region_pixels)
-      U += sigma / mu 
-  U /= (len(thresholds)+1)
+    regions = np.digitize(original, thresholds)
+    U = 0
+    for k in range(len(thresholds) + 1):
+        region_pixels = original[regions == k]
+        if len(region_pixels) > 0 and np.mean(region_pixels) != 0:
+            mu = np.mean(region_pixels)
+            sigma = np.std(region_pixels)
+            U += sigma / mu
+    U /= (len(thresholds) + 1)
 
-  return psnr, ssim, U
+    return psnr, ssim, U
+
 
 """**Reconstruct Segmented Image**"""
+
 
 def apply_thresholds(img, thresholds):
     thresholds = np.sort(np.round(thresholds).astype(int))
@@ -296,7 +331,7 @@ def apply_thresholds(img, thresholds):
     regions = np.digitize(img, thresholds)
 
     # Assign each region its mean intensity
-    for k in range(len(thresholds)+1):
+    for k in range(len(thresholds) + 1):
         region_pixels = img[regions == k]
         if len(region_pixels) > 0:
             mean_val = np.mean(region_pixels)
@@ -304,11 +339,12 @@ def apply_thresholds(img, thresholds):
 
     return segmented
 
+
 """**Running Prototype**"""
 
-# Experiment Loop
-def run_experiments(image_folder, K_values=[3,5,7,9,11,12], trials=30):
 
+# Experiment Loop
+def run_experiments(image_folder, K_values=[3, 5, 7, 9, 11, 12], trials=30):
     for img_file in os.listdir(image_folder):
 
         if not (img_file.endswith(".png") or img_file.endswith(".jpg")):
@@ -322,7 +358,7 @@ def run_experiments(image_folder, K_values=[3,5,7,9,11,12], trials=30):
             continue
 
         print("Loaded:", img_path)
-        hist = cv2.calcHist([img], [0], None, [256], [0,256])
+        hist = cv2.calcHist([img], [0], None, [256], [0, 256])
         hist_norm = hist.flatten() / hist.sum()
 
         for K in K_values:
@@ -336,10 +372,10 @@ def run_experiments(image_folder, K_values=[3,5,7,9,11,12], trials=30):
                     # Compute metrics
                     psnr, ssim, U = compute_metrics(img, segmented, best_thresholds)
 
-                    print(f"Image: {img_file}, Trial: {trial+1}, K={K}, Objective={obj_name}, "
-                            f"Best Thresholds={best_thresholds}, Raw Score={raw_score:.4f}, "
-                            f"PSNR={psnr:.4f}, SSIM={ssim:.4f}, Uniformity={U:.4f}")
+                    print(f"Image: {img_file}, Trial: {trial + 1}, K={K}, Objective={obj_name}, "
+                          f"Best Thresholds={best_thresholds}, Raw Score={raw_score:.4f}, "
+                          f"PSNR={psnr:.4f}, SSIM={ssim:.4f}, Uniformity={U:.4f}")
 
 
 if __name__ == "__main__":
-  run_experiments("content")
+    run_experiments("content")

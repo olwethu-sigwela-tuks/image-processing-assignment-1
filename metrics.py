@@ -1,9 +1,5 @@
 """
 Shared image I/O and evaluation-metric utilities.
-
-Used by both the single-run driver (run_experiment.py) and the batch
-experiment harness (experiment_harness.py) so the two never drift out
-of sync on how segmentation / PSNR / SSIM / Uniformity are computed.
 """
 
 import numpy as np
@@ -52,10 +48,7 @@ def compute_ssim(original, segmented):
 
 def compute_uniformity(gray_arr, thresholds):
     """
-    Feature Uniformity Measure (Levine & Nazif, 1985), generalised to
-    K thresholds -- widely used in the multilevel thresholding
-    literature as a segmentation-quality metric that doesn't require
-    ground truth.
+    Feature Uniformity Measure (Levine & Nazif, 1985), generalised to K thresholds
 
         U = 1 - (2 * sum_k sum_{i in C_k} (f_i - mu_k)^2)
                 / (M*N * (f_max - f_min)^2)

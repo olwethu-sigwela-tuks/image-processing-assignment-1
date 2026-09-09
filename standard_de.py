@@ -1,7 +1,7 @@
 """
 Standard Differential Evolution: DE/rand/1/bin with greedy selection.
 
-Reference (see Background_Differential_Evolution.pdf, Eq. 1):
+Reference (Background_Differential_Evolution.pdf, Eq. 1):
     x_i^{G+1} = u_i^G  if f(u_i^G) <= f(x_i^G)
               = x_i^G  otherwise
 """
@@ -103,21 +103,20 @@ class StandardDE:
         """
         Execute DE/rand/1/bin until MAX_FES is exhausted.
 
-        Returns
-        -------
+        Returns:
         best_thresholds : np.ndarray, sorted, rounded to int
         best_fitness_natural : float
             The objective value in its natural (to-be-maximised) sense.
         history : list of float
             Best-so-far fitness (natural sense) recorded once per
-            generation -- use for convergence-curve plots.
+            generation
         """
         pop, fitness = self._init_population()
 
         best_idx = np.argmin(fitness)  # internal fitness is minimised
         best_vec = pop[best_idx].copy()
         best_fit = fitness[best_idx]
-        self.history.append(-best_fit)  # store in natural (maximise) units
+        self.history.append(-best_fit)
 
         generation = 0
         while self.fes_used < self.MAX_FES:
@@ -132,7 +131,7 @@ class StandardDE:
                 trial = self._crossover(pop[i], mutant)
                 trial_fit = self._evaluate(trial)
 
-                # Greedy selection (Eq. 1 in background doc)
+                # Greedy selection
                 if trial_fit <= fitness[i]:
                     new_pop[i] = trial
                     new_fitness[i] = trial_fit

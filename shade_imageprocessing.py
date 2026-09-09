@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+from objective_functions import evaluate as _obj_evaluate
 
 """**Population Generation**"""
 
@@ -17,28 +18,36 @@ def initialize_population(pop_size, K, L=256):
     return np.array(population)
 
 """**Objective Functions**"""
-
 def otsu_objective(thresholds, hist):
-    thresholds = np.sort(thresholds.astype(int))
-    bins = np.arange(len(hist))
-    classes = np.split(hist, thresholds)
-    means = [np.mean(c) for c in classes]
-    weights = [c.sum() for c in classes]
-    overall_mean = np.sum(bins * hist)
-    variance = sum([w * (m - overall_mean)**2 for w, m in zip(weights, means)])
-    return -variance
+    return _obj_evaluate("otsu", thresholds, hist)
 
 def kapur_objective(thresholds, hist):
-    thresholds = np.sort(thresholds.astype(int))
-    classes = np.split(hist, thresholds)
-    entropy = sum([-np.sum(c * np.log(c + 1e-12)) for c in classes])
-    return -entropy
+    return _obj_evaluate("kapur", thresholds, hist)
 
 def tsallis_objective(thresholds, hist, q=0.8):
-    thresholds = np.sort(thresholds.astype(int))
-    classes = np.split(hist, thresholds)
-    tsallis = sum([(1 - np.sum(c**q)) / (q-1) for c in classes])
-    return -tsallis
+    return _obj_evaluate("tsallis", thresholds, hist, q=q)
+
+# def otsu_objective(thresholds, hist):
+#     thresholds = np.sort(thresholds.astype(int))
+#     bins = np.arange(len(hist))
+#     classes = np.split(hist, thresholds)
+#     means = [np.mean(c) for c in classes]
+#     weights = [c.sum() for c in classes]
+#     overall_mean = np.sum(bins * hist)
+#     variance = sum([w * (m - overall_mean)**2 for w, m in zip(weights, means)])
+#     return -variance
+#
+# def kapur_objective(thresholds, hist):
+#     thresholds = np.sort(thresholds.astype(int))
+#     classes = np.split(hist, thresholds)
+#     entropy = sum([-np.sum(c * np.log(c + 1e-12)) for c in classes])
+#     return -entropy
+#
+# def tsallis_objective(thresholds, hist, q=0.8):
+#     thresholds = np.sort(thresholds.astype(int))
+#     classes = np.split(hist, thresholds)
+#     tsallis = sum([(1 - np.sum(c**q)) / (q-1) for c in classes])
+#     return -tsallis
 
 objective_functions = {
     "Otsu": otsu_objective,
@@ -48,10 +57,11 @@ objective_functions = {
 
 """**Mutation & Crossover (DE)**"""
 
-def mutation(current, pop, archive, F, p=0.2):
-    # Select p-best individual
+def mutation(current, pop, fitness, archive, F, p=0.2):
+    # Select p-best individual by FITNESS RANK, not array position
     p_best_size = max(2, int(p * len(pop)))
-    p_best = pop[np.random.randint(0, p_best_size)]
+    best_idx = np.argsort(fitness)[:p_best_size]
+    p_best = pop[best_idx[np.random.randint(0, len(best_idx))]]
 
     # Random individuals
     r1 = pop[np.random.randint(len(pop))]
@@ -70,13 +80,15 @@ def mutation(current, pop, archive, F, p=0.2):
 
 def crossover(target, mutant, CR=0.9):
     mask = np.random.rand(len(target)) < CR
+    j_rand = np.random.randint(len(target))
+    mask[j_rand] = True
     trial = np.where(mask, mutant, target)
     return np.sort(trial)
 
 """**Selection**"""
 
 def selection(target, trial, hist, objective_fn):
-    if objective_fn(trial, hist) < objective_fn(target, hist):
+    if objective_fn(trial, hist) <= objective_fn(target, hist):
         return trial
     else:
         return target
@@ -108,6 +120,7 @@ def update_memory(memory_F, memory_CR, mem_index, success_F, success_CR, success
 
 def shade(hist, K, objective_fn, pop_size=30, max_gen=100):
     pop = initialize_population(pop_size, K)
+    fitness = np.array([objective_fn(ind, hist) for ind in pop])
     best = None
     archive = []
 
@@ -120,32 +133,38 @@ def shade(hist, K, objective_fn, pop_size=30, max_gen=100):
     for gen in range(max_gen):
         success_F, success_CR, success_deltas = [], [], []
         new_pop = []
+        new_fitness = []
 
-        for target in pop:
+        for i, target in enumerate(pop):
             F, CR = sample_parameters(memory_F, memory_CR, mem_index)
             p = np.random.uniform(2/len(pop), 0.2)
-            mutant = mutation(target, pop, archive, F, p=p)
+            mutant = mutation(target, pop, fitness, archive, F, p=p)
             trial = crossover(target, mutant, CR=CR)
-            selected = selection(target, trial, hist, objective_fn)
+            trial_fit = objective_fn(trial, hist)
+            target_fit = fitness[i]
 
-            if not np.array_equal(selected, target):
+            if trial_fit <= target_fit:
+                selected, selected_fit = trial, trial_fit
                 # Track successful parameters for memory update
                 success_F.append(F)
                 success_CR.append(CR)
-                success_deltas.append(abs(objective_fn(target, hist) - objective_fn(selected, hist)))
+                success_deltas.append(abs(target_fit - trial_fit) + 1e-12)
 
                 archive.append(target)
                 if len(archive) > len(pop):
                   # Keep archive size ≤ population size
                   archive.pop(np.random.randint(len(archive)))
+            else:
+                selected, selected_fit = target, target_fit
 
             new_pop.append(selected)
+            new_fitness.append(selected_fit)
 
         pop = np.array(new_pop)
-        scores = [objective_fn(ind, hist) for ind in pop]
-        best_idx = np.argmin(scores)
+        fitness = np.array(new_fitness)
+        best_idx = np.argmin(fitness)
         best = pop[best_idx]
-        best_score = scores[best_idx]
+        best_score = fitness[best_idx]
 
         # --- Update memory pools ---
         memory_F, memory_CR, mem_index = update_memory(memory_F, memory_CR, mem_index,
