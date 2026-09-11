@@ -8,7 +8,7 @@ import pandas as pd
 from scipy.stats import wilcoxon, friedmanchisquare
 
 RAW_RESULTS = "results/phase1_bsd500/raw_results.csv"
-METRIC = "psnr"
+METRIC = "uniformity"
 ALPHA = 0.05
 OUTDIR = "results/phase1_bsd500"
 

@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 CONV_DIR = "results/phase1_bsd500/convergence"
 RAW_RESULTS = "results/phase1_bsd500/raw_results.csv"
 IMAGE = "img1.png"
-OBJECTIVE = "kapur"
+OBJECTIVE = "tsallis"
 K = 5
 ALGORITHMS = ["StandardDE", "LADE", "JADE", "SHADE", "LSHADE"]
 OUTDIR = "results/phase1_bsd500"
