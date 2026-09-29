@@ -37,6 +37,7 @@ class LADE:
     objective_kwargs : dict
         Extra kwargs forwarded to the objective (e.g. {"q": 0.8} for
         tsallis).
+    L_a: How many turns back the late acceptance history goes.
     """
 
     def __init__(
@@ -99,7 +100,7 @@ class LADE:
     # ----------------------------------------------------------------
     def run(self, verbose=False):
         """
-        Execute DE/rand/1/bin until MAX_FES is exhausted.
+        Execute LADE until MAX_FES is exhausted.
 
         Returns
         -------
@@ -131,7 +132,11 @@ class LADE:
                 trial = self._crossover(pop[i], mutant)
                 trial_fit = self._evaluate(trial)
 
-                # Late acceptance selection
+                # Late acceptance selection.
+                # The current candidate is compared to both the best solution immediately
+                # before it, and the best fitness from 10 turns ago.
+                # This makes it possible to accept promising solutions
+                # even if they are worse than the one immediately prior.
                 if (trial_fit <= fitness[i]) or (trial_fit < past_fitness[0][i]):
                     new_pop[i] = trial
                     new_fitness[i] = trial_fit

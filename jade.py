@@ -29,7 +29,7 @@ class JADE:
         Population size.
     MAX_FES (Maximum Function Evaluations) : int
         Maximum number of objective-function evaluations. This is the
-        stopping criterion
+        stopping criterion.
     F : float
         Differential mutation scale factor.
     CR : float
@@ -39,6 +39,8 @@ class JADE:
     objective_kwargs : dict
         Extra kwargs forwarded to the objective (e.g. {"q": 0.8} for
         tsallis).
+    c: A parameter that controls how quickly the average CR and F change with each generation.
+    p: A parameter that controls what percentage of the best solutions is chosen.
     """
 
     def __init__(
@@ -130,7 +132,7 @@ class JADE:
     # ----------------------------------------------------------------
     def run(self, verbose=False):
         """
-        Execute DE/rand/1/bin until MAX_FES is exhausted.
+        Execute JADE until MAX_FES is exhausted.
 
         Returns
         -------
@@ -218,6 +220,8 @@ class JADE:
             pop = np.array(new_pop)
             fitness = np.array(new_fitness)
             if len(s_CR) > 0 and len(s_F) > 0:
+                # The mean CR and F are updated using previous successful CR's and F's,
+                # and weighted by the c parameter
                 CR_mean = ((1 - self.c) * CR_mean) + (self.c * np.mean(s_CR))
                 F_mean = ((1 - self.c) * F_mean) + (self.c * self.lehmer_mean(s_F))
 
