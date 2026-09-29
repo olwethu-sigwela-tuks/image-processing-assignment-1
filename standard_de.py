@@ -31,7 +31,7 @@ class StandardDE:
         Population size.
     MAX_FES (Maximum Function Evaluations) : int
         Maximum number of objective-function evaluations. This is the
-        stopping criterion
+        stopping criterion.
     F : float
         Differential mutation scale factor.
     CR : float
