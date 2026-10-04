@@ -60,6 +60,21 @@ def otsu(thresholds, hist_prob):
 
     return variance
 
+def calculate_total_variance(hist_prob):
+    #returns variance of the intensity range [lo, hi)
+   
+   L =  len(hist_prob)
+   levels = np.arange(L)
+
+   mu_T = np.sum(levels * hist_prob)
+
+   total_variance = np.sum(hist_prob * ((levels - mu_T) ** 2))
+
+   return float(total_variance)
+        
+
+
+
 
 def kapur(thresholds, hist_prob):
     """

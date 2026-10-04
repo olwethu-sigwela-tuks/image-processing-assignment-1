@@ -5,15 +5,19 @@ Shared image I/O and evaluation-metric utilities.
 import numpy as np
 from PIL import Image
 from skimage.metrics import structural_similarity as sk_ssim
-
+from objective_functions import otsu, calculate_total_variance #used to get between-class and total variance
 
 def load_grayscale_histogram(image_path):
     """Load an image, convert to 8-bit grayscale, return (gray_array, hist_prob)."""
     img = Image.open(image_path).convert("L")
     arr = np.array(img, dtype=np.uint8)
-    hist, _ = np.histogram(arr, bins=256, range=(0, 256))
-    hist_prob = hist / hist.sum()
+    hist_prob = (arr)
     return arr, hist_prob
+
+def make_histogram(gray_arr):
+    hist, _ = np.histogram(gray_arr, bins=256, range=(0, 256))
+    hist_prob = hist / hist.sum()
+    return hist_prob
 
 
 def segment_image(gray_arr, thresholds):
@@ -31,7 +35,6 @@ def segment_image(gray_arr, thresholds):
         class_mean = gray_arr[mask].mean()
         out[mask] = np.uint8(round(class_mean))
     return out
-
 
 def compute_psnr(original, segmented):
     """Peak Signal-to-Noise Ratio between original and reconstructed image (dB)."""
@@ -72,3 +75,9 @@ def compute_uniformity(gray_arr, thresholds):
         ssd_total += np.sum((class_pixels - mu_k) ** 2)
 
     return 1.0 - (2.0 * ssd_total) / denom
+
+def class_separability(gray_arr, thresholds):
+    hist_prob = make_histogram(gray_arr)
+    between_class_variance = otsu(thresholds, hist_prob)
+    total_variance = calculate_total_variance(hist_prob)
+    return between_class_variance / total_variance
