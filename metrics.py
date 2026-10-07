@@ -76,8 +76,12 @@ def compute_uniformity(gray_arr, thresholds):
 
     return 1.0 - (2.0 * ssd_total) / denom
 
-def class_separability(gray_arr, thresholds):
+def compute_class_separability(gray_arr, thresholds):
     hist_prob = make_histogram(gray_arr)
     between_class_variance = otsu(thresholds, hist_prob)
     total_variance = calculate_total_variance(hist_prob)
-    return between_class_variance / total_variance
+    
+    if total_variance == 0:
+        return 1.0
+    
+    return float(np.clip(between_class_variance / total_variance, 0.0, 1.0))

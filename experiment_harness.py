@@ -37,6 +37,7 @@ from metrics import (
     compute_psnr,
     compute_ssim,
     compute_uniformity,
+    compute_class_separability
 )
 
 
@@ -249,6 +250,7 @@ def run_single(algo_name, image_path, hist_prob, gray_arr, K, objective, seed):
         "psnr": compute_psnr(gray_arr, segmented),
         "ssim": compute_ssim(gray_arr, segmented),
         "uniformity": compute_uniformity(gray_arr, best_thresholds),
+        "class_separability": compute_class_separability(gray_arr, best_thresholds),
         "time_sec": elapsed,
         "fes_used": algo.fes_used,
     }
