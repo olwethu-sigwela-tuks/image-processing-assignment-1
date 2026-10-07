@@ -11,7 +11,7 @@ def load_grayscale_histogram(image_path):
     """Load an image, convert to 8-bit grayscale, return (gray_array, hist_prob)."""
     img = Image.open(image_path).convert("L")
     arr = np.array(img, dtype=np.uint8)
-    hist_prob = (arr)
+    hist_prob = make_histogram(arr)
     return arr, hist_prob
 
 def make_histogram(gray_arr):

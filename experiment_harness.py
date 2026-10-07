@@ -224,7 +224,7 @@ def build_algorithm(algo_name, dim, hist_prob, objective_name, seed, objective_k
 
 RAW_RESULTS_COLUMNS = [
     "algorithm", "image", "objective", "K", "seed",
-    "best_thresholds", "fitness", "psnr", "ssim", "uniformity",
+    "best_thresholds", "fitness", "psnr", "ssim", "uniformity", "class_separability",
     "time_sec", "fes_used",
 ]
 
@@ -367,7 +367,8 @@ def run_phase(image_dir, outdir):
             f"[{done}/{total_runs}] {algo_name} | {record['image']} | "
             f"{objective} | K={K} | seed={seed} -> "
             f"PSNR={record['psnr']:.2f} SSIM={record['ssim']:.3f} "
-            f"U={record['uniformity']:.3f} t={record['time_sec']:.2f}s | "
+            f"U={record['uniformity']:.3f} Class Separability={record['class_separability']:.3f} "
+            f"t={record['time_sec']:.2f}s | "
             f"ETA={eta/60:.1f} min"
         )
 
@@ -393,6 +394,7 @@ def summarize(df, outdir):
             psnr_mean=("psnr", "mean"), psnr_std=("psnr", "std"),
             ssim_mean=("ssim", "mean"), ssim_std=("ssim", "std"),
             uniformity_mean=("uniformity", "mean"), uniformity_std=("uniformity", "std"),
+            class_separability_mean=("class_separability", "mean"), class_separability_std=("class_separability", "std"),
             time_mean=("time_sec", "mean"), time_std=("time_sec", "std"),
             n_runs=("seed", "count"),
         )
@@ -415,6 +417,7 @@ def summarize_by_image(df, outdir):
             psnr_mean=("psnr", "mean"), psnr_std=("psnr", "std"),
             ssim_mean=("ssim", "mean"), ssim_std=("ssim", "std"),
             uniformity_mean=("uniformity", "mean"), uniformity_std=("uniformity", "std"),
+            class_separability_mean=("class_separability", "mean"), class_separability_std=("class_separability", "std"),
             time_mean=("time_sec", "mean"),
             n_runs=("seed", "count"),
         )
