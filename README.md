@@ -40,8 +40,7 @@ Image reconstruction quality is measured using:
 - **Uniformity (U)** — region homogeneity
 
 For medical images, additional metrics:
-- **Jaccard Index**
-- **Dice Coefficient**
+- **Class Separability**
 
 ## 📖 Reference
 ESWA journal article template: [Overleaf link](https://www.overleaf.com/project/6aab23886e4e6eaae7ef8448)
