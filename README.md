@@ -44,4 +44,4 @@ For medical images, additional metrics:
 - **Dice Coefficient**
 
 ## 📖 Reference
-ESWA journal article template: [Overleaf link](https://www.overleaf.com/latex/templates/eswajournal-articletemplate/xryvqrgpxdvx)
+ESWA journal article template: [Overleaf link](https://www.overleaf.com/project/6aab23886e4e6eaae7ef8448)
