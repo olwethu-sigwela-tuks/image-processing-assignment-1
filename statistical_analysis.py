@@ -7,10 +7,10 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon, friedmanchisquare
 
-RAW_RESULTS = "results/phase1_bsd500/raw_results.csv"
-METRIC = "uniformity"
+RAW_RESULTS = "results/phase2_chaos/raw_results.csv"
+METRIC = "ssim"
 ALPHA = 0.05
-OUTDIR = "results/phase1_bsd500"
+OUTDIR = "results/phase2_chaos"
 
 
 def _pivot_for_group(df, metric, algorithms):
