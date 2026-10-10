@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 CONV_DIR = "results/phase2_chaos/convergence"
 RAW_RESULTS = "results/phase2_chaos/raw_results.csv"
 IMAGE = "IMG-0003-00010.png"
-OBJECTIVE = "tsallis"
+OBJECTIVE = "kapur"
 K = 5
 ALGORITHMS = ["StandardDE", "LADE", "JADE", "SHADE", "LSHADE"]
 OUTDIR = "results/phase2_chaos"
