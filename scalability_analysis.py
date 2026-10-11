@@ -5,12 +5,13 @@ Computational time vs K scalability analysis.
 import os
 
 import pandas as pd
+from scipy.stats import linregress
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-RAW_RESULTS = "results/phase1_bsd500/raw_results.csv"
-OUTDIR = "results/phase1_bsd500"
+RAW_RESULTS = "results/phase2_chaos/raw_results.csv"
+OUTDIR = "results/phase2_chaos"
 
 
 def scalability_table(df):
@@ -23,6 +24,26 @@ def scalability_table(df):
         .sort_values(["algorithm", "K"])
     )
     return table
+
+
+def linear_fit_table(df):
+    """
+    Scalability summary matching the report table (Table 16): for each algorithm, mean time at K=3 and K=12, growth ratio t(12)/t(3),
+    and the least-squares line time = a + slope*K fitted to the mean time at each K (averaged over all images/objectives/seeds).
+    r2 is the coefficient of determination of that fit (1 - SS_res/SS_tot).
+    """
+    rows = []
+    for algo, g in df.groupby("algorithm"):
+        m = g.groupby("K")["time_sec"].mean()
+        fit = linregress(m.index.values, m.values)
+        rows.append({
+            "algorithm": algo,
+            "t_K3": m.loc[3], "t_K12": m.loc[12],
+            "growth_ratio": m.loc[12] / m.loc[3],
+            "slope_s_per_K": fit.slope,
+            "r2": fit.rvalue ** 2,
+        })
+    return pd.DataFrame(rows)
 
 
 def plot_scalability(df, outpath):
@@ -53,6 +74,15 @@ def main():
     table_path = os.path.join(OUTDIR, "scalability_table.csv")
     table.to_csv(table_path, index=False)
     print(f"Saved {table_path} ({len(table)} rows)")
+
+    fit = linear_fit_table(df)
+    fit_path = os.path.join(OUTDIR, "scalability_fit.csv")
+    fit.to_csv(fit_path, index=False)
+    print(f"Saved {fit_path}")
+    print("\nAlgorithm   t(K=3)  t(K=12)  Growth  Slope(s/K)  r^2")
+    for _, r in fit.iterrows():
+        print(f"{r['algorithm']:<11} {r['t_K3']:.3f} s {r['t_K12']:.3f} s  {r['growth_ratio']:.2f}x  "
+              f"{r['slope_s_per_K']:.4f}      {r['r2']:.4f}")
 
 
 if __name__ == "__main__":
