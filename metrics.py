@@ -15,6 +15,7 @@ def load_grayscale_histogram(image_path):
     return arr, hist_prob
 
 def make_histogram(gray_arr):
+    """Create histogram from gray-level array"""
     hist, _ = np.histogram(gray_arr, bins=256, range=(0, 256))
     hist_prob = hist / hist.sum()
     return hist_prob
@@ -77,6 +78,11 @@ def compute_uniformity(gray_arr, thresholds):
     return 1.0 - (2.0 * ssd_total) / denom
 
 def compute_class_separability(gray_arr, thresholds):
+    """
+    Returns unsupervised class seperability, which is
+    the between-class variance divided by the total variance
+    """
+
     hist_prob = make_histogram(gray_arr)
     between_class_variance = otsu(thresholds, hist_prob)
     total_variance = calculate_total_variance(hist_prob)
